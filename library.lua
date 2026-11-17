@@ -308,7 +308,7 @@ function Library.CreateWindow(options,colonOptions)
             return state
         end
         function themeUpdates.enable(state,enabled,quiet)
-            enabled=enabled==true
+            enabled=false
             if state.enabled==enabled then return end
             state.enabled=enabled;values[state.id..'Rainbow']=enabled
             if enabled then
@@ -352,10 +352,7 @@ function Library.CreateWindow(options,colonOptions)
             if not running() then stop() end
         end
         function themeUpdates.restore(data)
-            for _,state in pairs(themeUpdates.states) do
-                controls[state.id..'RainbowSpeed'].set(data[state.id..'RainbowSpeed'] or 1,true)
-                controls[state.id..'Rainbow'].set(data[state.id..'Rainbow']==true,true)
-            end
+            for _,state in pairs(themeUpdates.states) do themeUpdates.enable(state,false,true) end
         end
         function themeUpdates.setVisible(shown)
             shown=shown==true and not (themeUpdates.gui and themeUpdates.gui.Enabled==false)
@@ -1979,10 +1976,6 @@ function Library.CreateWindow(options,colonOptions)
     local function colorPicker(parent,id,initial,pos,callback,options)
         options=options or {}
         local state=themeUpdates.add(options.themeKey,id)
-        if state then
-            register(id..'Rainbow',false,function(value,quiet) themeUpdates.enable(state,value,quiet) end)
-            register(id..'RainbowSpeed',1,function(value) themeUpdates.speed(state,value) end)
-        end
         local b=button(parent,'',pos or UDim2.new(1,-10,0,2),UDim2.fromOffset(10,10))
         b.Name=id..'ColorPicker';b:SetAttribute('NoHover',true);b.ZIndex=5
         b:FindFirstChildOfClass('UICorner').CornerRadius=UDim.new(0,3)
@@ -2007,7 +2000,7 @@ function Library.CreateWindow(options,colonOptions)
         end
         appearanceRefreshers.watch(b,function() animate(b,{BackgroundColor3=parseColor(values[id]) or initial},motion.Control) end)
         connectOwned(b,b.Activated,function()
-            local box=popupAt(b,176,state and 234 or 176)
+            local box=popupAt(b,176,176)
             styleSurface(box,'Popup')
             local hue,sat,val=parseColor(values[id]):ToHSV()
             local sv=button(box,'',UDim2.fromOffset(8,8),UDim2.fromOffset(140,140));sv.Name='SaturationValue'
@@ -2070,39 +2063,6 @@ function Library.CreateWindow(options,colonOptions)
             connectOwned(strip,strip.InputBegan,function(input)
                 begin(input,function(_,y) hue=math.clamp((y-strip.AbsolutePosition.Y)/strip.AbsoluteSize.Y,0,1);update() end)
             end)
-            if state then
-                local rainbowLabel=text(box,'Rainbow',UDim2.fromOffset(8,177),UDim2.fromOffset(124,16),8)
-                local rainbow,paintSwitch=switchControl(box,UDim2.fromOffset(149,180),state.enabled,function(value)
-                    controls[id..'Rainbow'].set(value)
-                end)
-                rainbow.Name=id..'RainbowToggle'
-                text(box,'Speed',UDim2.fromOffset(8,199),UDim2.fromOffset(92,16),8)
-                local speed=new('TextBox',{Name=id..'RainbowSpeedValue',Position=UDim2.fromOffset(116,199),Size=UDim2.fromOffset(52,16),
-                    BackgroundTransparency=1,BorderSizePixel=0,Font=uiFont,TextSize=8,Text='',ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Right},box)
-                bind(speed,'TextColor3','Text')
-                local speedTrack=button(box,'',UDim2.fromOffset(8,221),UDim2.fromOffset(160,4));speedTrack.Name=id..'RainbowSpeedTrack'
-                speedTrack:SetAttribute('NoHover',true)
-                local speedFill=frame(speedTrack,UDim2.new(),UDim2.fromScale(0,1),'Accent');round(speedFill,2)
-                local function paintSettings()
-                    paintSwitch(state.enabled)
-                    bind(rainbowLabel,'TextColor3',state.enabled and 'SelectedText' or 'IdleText',motion.Control)
-                    if UIS:GetFocusedTextBox()~=speed then speed.Text=string.format('%.1fx',state.speed) end
-                    animate(speedFill,{Size=UDim2.fromScale((state.speed-.1)/2.9,1)},0)
-                end
-                state.ui={owner=box,paint=paintSettings}
-                connectOwned(speed,speed.FocusLost,function()
-                    local number=tonumber((speed.Text:lower():gsub('x',''):gsub('×',''):gsub(',','.')))
-                    controls[id..'RainbowSpeed'].set(number or state.speed);paintSettings()
-                end)
-                connectOwned(speedTrack,speedTrack.InputBegan,function(input)
-                    if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
-                    local function move(x)
-                        controls[id..'RainbowSpeed'].set(.1+2.9*math.clamp((x-speedTrack.AbsolutePosition.X)/speedTrack.AbsoluteSize.X,0,1))
-                    end
-                    activeDrag={kind='slider',input=input,popup=box.Parent,owner=speedTrack,update=move};move(input.Position.X)
-                end)
-                paintSettings()
-            end
             update(true)
         end)
         return b,set
