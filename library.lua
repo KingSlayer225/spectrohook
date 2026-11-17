@@ -1,7 +1,15 @@
 -- Lua | library.lua | Spectrohook UI library
-local Library={Version="1.0.1"}
+local Library={Version="2.0.0"}
 function Library.CreateWindow(options,colonOptions)
     if options==Library then options=colonOptions end
+    options=options or {}
+    options.Compatibility=type(options.Build)~='function'
+    if options.Compatibility then
+        options.Build=function() end
+        options.SettingsPage=options.SettingsPage or 'UI Settings'
+        options.Pages=options.Pages or {'Main',options.SettingsPage}
+    end
+    options.Name=options.Name or options.Title
     assert(type(options)=="table" and type(options.Build)=="function","CreateWindow requires a Build function")
     if options.Pages==nil then options.Pages={"Combat","Misc","Visuals","Settings"} end
     do
@@ -9,9 +17,9 @@ function Library.CreateWindow(options,colonOptions)
         assert(type(options.Pages)=="table" and #options.Pages>0,"Pages must be a nonempty array")
         for _,name in ipairs(options.Pages) do
             assert(type(name)=="string" and name~="" and not unique[name],"Page names must be unique strings")
-            unique[name]=true;if name=="Settings" then settings=true end
+            unique[name]=true;if name==(options.SettingsPage or "Settings") then settings=true end
         end
-        if not settings then options.Pages[#options.Pages+1]="Settings" end
+        if not settings then options.Pages[#options.Pages+1]=options.SettingsPage or "Settings" end
     end
     local Players=game:GetService("Players")
     local UIS=game:GetService("UserInputService")
@@ -47,6 +55,28 @@ function Library.CreateWindow(options,colonOptions)
     for key,value in pairs(themePresets.White.colors) do theme[key]=value end
     for key,value in pairs(themePresets.White.style) do themeStyle[key]=value end
     local alive, connections, themeBindings, controls, values = true, {}, setmetatable({},{__mode="k"}), {}, {}
+    local bridge={data={},events={},active={}}
+    function bridge.same(a,b)
+        if a==b then return true end
+        if type(a)~='table' or type(b)~='table' or getmetatable(a) or getmetatable(b) then return false end
+        for key,value in pairs(a) do if not bridge.same(value,b[key]) then return false end end
+        for key in pairs(b) do if a[key]==nil then return false end end
+        return true
+    end
+    values=setmetatable({}, {
+        __index=bridge.data,
+        __newindex=function(_,id,value)
+            local changed=not bridge.same(bridge.data[id],value)
+            bridge.data[id]=value
+            if changed then
+                for _,fn in ipairs(bridge.events[id] or {}) do
+                    local ok,err=pcall(fn,value)
+                    if not ok then warn('Spectrohook observer: '..tostring(err)) end
+                end
+            end
+        end,
+        __pairs=function() return next,bridge.data,nil end,
+    })
     local restoringConfig=false
     local appearanceRefreshers={}
     local function refreshAppearance()
@@ -1161,7 +1191,7 @@ function Library.CreateWindow(options,colonOptions)
             if not win.Visible then win.GroupTransparency=1;scale.Scale=win.Name=='Main' and 1 or .97 end
             win.Visible=true
         end
-        local duration=quiet and 0 or (win.Name=="Main" and .28 or motion.Window)
+        local duration=quiet and 0 or (win.Name=="Main" and math.max(0,tonumber(options.MenuFadeTime) or .28) or motion.Window)
         animate(scale,{Scale=win.Name=='Main' and 1 or shown and 1 or .97},win.Name=='Main' and 0 or duration)
         animate(win,{GroupTransparency=shown and 0 or 1},duration,function()
             if win:GetAttribute("VisibilityRevision")==revision and not shown then win.Visible=false end
@@ -1223,7 +1253,7 @@ function Library.CreateWindow(options,colonOptions)
     local defaultMainY=(720-mainHeight)/2
     local navigationTop=headerHeight+7
     local navigationHeight=20
-    local navigationGap=5
+    local navigationGap=math.max(0,tonumber(options.TabPadding) or 5)
     local contentLeft=8
     local contentTop=navigationTop+navigationHeight+8
     local contentWidth=mainWidth-contentLeft-8
@@ -1428,7 +1458,7 @@ function Library.CreateWindow(options,colonOptions)
         animate(entry.scale,{Scale=.97},motion.Window)
         fitNotifications(true)
     end
-    local function notify(title,description,noBar)
+    local function notify(title,description,noBar,customDuration)
         if not alive or values.NotificationsEnabled==false then return end
         local height=description and description~="" and 45 or 29
         local slot=frame(notices,UDim2.new(),UDim2.fromOffset(noticeWidth,height))
@@ -1450,7 +1480,7 @@ function Library.CreateWindow(options,colonOptions)
             local d=text(card,description,UDim2.fromOffset(7,17),UDim2.new(1,-14,0,18),7,"Unselected")
             d.TextWrapped=true;d.TextYAlignment=Enum.TextYAlignment.Top
         end
-        local duration=tonumber(values.NotificationDuration) or 3.6
+        local duration=tonumber(customDuration) or tonumber(values.NotificationDuration) or 3.6
         if not noBar and values.NotificationBar~=false then
             local progress=frame(card,UDim2.new(0,5,1,-5),UDim2.new(1,-10,0,2),"Accent")
             round(progress,1)
@@ -1550,7 +1580,7 @@ function Library.CreateWindow(options,colonOptions)
     end
     appearanceRefreshers[#appearanceRefreshers+1]=paintTabs
     local tabX=0
-    for i,name in ipairs(options.Pages) do
+    local function addNativeTab(name,i)
         local side=10
         local labelWidth=math.ceil(game:GetService('TextService'):GetTextSize(name,8,uiFont,Vector2.new(1000,navigationHeight)).X)+2
         local tabWidth=math.max(58,labelWidth+side+5+16)
@@ -1570,7 +1600,10 @@ function Library.CreateWindow(options,colonOptions)
         connectOwned(b,b.MouseEnter,function() b:SetAttribute("Hovered",true);paintTabs() end)
         connectOwned(b,b.MouseLeave,function() b:SetAttribute("Hovered",false);paintTabs() end)
         tabX=tabX+tabWidth+navigationGap
+        page.Visible=false
+        return page
     end
+    for i,name in ipairs(options.Pages) do addNativeTab(name,i) end
 
     local function column(page,x,width,height)
         local col=new("ScrollingFrame",{
@@ -2096,7 +2129,7 @@ function Library.CreateWindow(options,colonOptions)
         local count=0
         local names={MouseButton1='LMB',MouseButton2='RMB',MouseButton3='MMB',RightAlt='RALT'}
         for _,record in ipairs(keybindRecords) do
-            local visible=values[record.id] and values[record.id]~='Unknown'
+            local visible=not record.noUI and values[record.id] and values[record.id]~='Unknown'
             local entry=bindRows[record.id]
             if visible and not entry then
                 local r=row(bindList,18);r.Name='KeybindEntry';r:SetAttribute('BindId',record.id)
@@ -2131,9 +2164,11 @@ function Library.CreateWindow(options,colonOptions)
         animate(keybinds,{Size=UDim2.fromOffset(164,height),Position=windowPosition(keybinds,keybinds.Position.X.Offset,keybinds.Position.Y.Offset,164,height)},motion.Control)
     end
     function keybindRecords.setActive(record,state)
+        local previous=record.active
         record.active=state==true
         local control=record.featureId and controls[record.featureId]
         if control and not restoringConfig and values[record.featureId]~=record.active then control.set(record.active) end
+        if previous~=record.active and bridge.active[record.id] then bridge.active[record.id](record.active) end
     end
     function keybindRecords.dispatch(input)
         for _,record in ipairs(keybindRecords) do
@@ -2253,6 +2288,131 @@ function Library.CreateWindow(options,colonOptions)
     end
     function sectionControllers.api:SetVisible(visible) setWindowVisible(main,visible) end
     function sectionControllers.api:Destroy() gui:Destroy() end
+    sectionControllers.example={
+        players=Players,main=main,bindFrame=keybinds,
+        get=function(id) return controls[id] and controls[id].get() end,
+        has=function(id) return controls[id]~=nil end,
+        set=function(id,value) assert(controls[id],'Unknown control: '..tostring(id));controls[id].set(value) end,
+        observe=function(id,fn) bridge.events[id]=bridge.events[id] or {};table.insert(bridge.events[id],fn) end,
+        connect=function(signal,fn) return connectOwned(gui,signal,fn) end,
+        destroyed=function(fn) connectOwned(gui,gui.Destroying,fn) end,
+        toggle=toggle,slider=slider,dropdown=dropdown,color=colorRow,keybind=keybind,action=actionRow,parseColor=parseColor,
+        accent=function() return theme.Accent end,background=function() return theme.Background end,
+        addTab=function(name)
+            assert(type(name)=='string' and name~='','Tab name is required')
+            if not pages[name] then options.Pages[#options.Pages+1]=name;addNativeTab(name,#options.Pages);paintTabs() end
+            return pages[name]
+        end,
+        columns=featureColumns,
+        selectTab=setTab,
+        group=function(parent,title,id)
+            local body,shell=sectionTitle(parent,title,id,{settings=true})
+            sectionControllers[shell]();return body,shell
+        end,
+        showBinds=function(value) setWindowVisible(keybinds,value==true) end,
+        toggleMenu=function() setWindowVisible(main,not main:GetAttribute('VisibleTarget')) end,
+        setTitle=function(title) brand.Text=title end,
+        notify=function(message,duration) notify(scriptName,message,nil,duration) end,
+        setWatermark=function(value) if sectionControllers.watermark then sectionControllers.watermark.setText(value) end end,
+        findBind=function(id) for _,record in ipairs(keybindRecords) do if record.id==id then return record end end end,
+        bindChanged=function(id,fn) bridge.active[id]=fn end,
+        setBindActive=keybindRecords.setActive,updateBinds=updateBindList,
+    }
+    function sectionControllers.example.input(parent,title,id,initial,info)
+        local r=row(parent,36)
+        text(r,title,UDim2.new(),UDim2.new(1,0,0,12),8)
+        local box=new('TextBox',{
+            Name=id..'Input',Text=initial,PlaceholderText=info.Placeholder or '',ClearTextOnFocus=false,
+            Position=UDim2.fromOffset(0,14),Size=UDim2.new(1,0,0,20),BackgroundColor3=theme.Inline,
+            TextColor3=theme.Text,Font=uiFont,TextSize=8,BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Left,
+        },r)
+        round(box,5);styleSurface(box,'Input');bind(box,'BackgroundColor3','Inline');bind(box,'TextColor3','Text')
+        searchTag(r,title,id,'Input');new('UIPadding',{PaddingLeft=UDim.new(0,6)},box)
+        local updating=false
+        local function set(value)
+            value=tostring(value or '')
+            if info.MaxLength then value=value:sub(1,math.max(0,info.MaxLength)) end
+            if info.Numeric and value~='' and not tonumber(value) then value=values[id] or initial end
+            values[id]=value
+            if box.Text~=value then updating=true;box.Text=value;updating=false end
+        end
+        register(id,initial,set);set(initial)
+        connectOwned(box,box:GetPropertyChangedSignal('Text'),function() if not updating and not info.Finished then set(box.Text) end end)
+        connectOwned(box,box.FocusLost,function(enter) if not info.Finished or enter then set(box.Text) else updating=true;box.Text=values[id];updating=false end end)
+        return box,r
+    end
+    function sectionControllers.example.tooltip(anchor,message)
+        local tip,revision=nil,0
+        local function hide() revision=revision+1;if tip then tip:Destroy();tip=nil end end
+        connectOwned(anchor,anchor.MouseEnter,function()
+            revision=revision+1;local token=revision
+            task.delay(.35,function()
+                if token~=revision or not alive or not anchor.Parent then return end
+                local measured=game:GetService('TextService'):GetTextSize(tostring(message),8,uiFont,Vector2.new(190,1000))
+                local width,height=math.min(206,measured.X+14),math.max(24,measured.Y+12)
+                tip=frame(canvas,UDim2.new(),UDim2.fromOffset(width,height),'DropdownSurface')
+                tip.Name='ExampleTooltip';tip.ZIndex=10001;tip.Active=false;round(tip,6)
+                local p=anchor.AbsolutePosition-canvas.AbsolutePosition
+                tip.Position=windowPosition(tip,p.X/uiScale.Scale,p.Y/uiScale.Scale+anchor.AbsoluteSize.Y/uiScale.Scale+4)
+                local label=text(tip,tostring(message),UDim2.fromOffset(7,5),UDim2.new(1,-14,1,-10),8,'Text');label.TextWrapped=true;label.Active=false
+            end)
+        end)
+        connectOwned(anchor,anchor.MouseLeave,hide);connectOwned(anchor,anchor.Destroying,hide)
+    end
+    function sectionControllers.example.resizeLabel(label,r,wrap)
+        local lines=1;for _ in label.Text:gmatch('\n') do lines=lines+1 end
+        local height=math.max(14,lines*12)
+        if wrap then
+            local available=math.max(30,columnWidth-22)
+            local measured=game:GetService('TextService'):GetTextSize(label.Text,8,uiFont,Vector2.new(available,10000))
+            height=math.max(height,measured.Y+2)
+        end
+        r.Size=UDim2.new(1,0,0,height);label.Size=UDim2.fromScale(1,1);label.TextWrapped=wrap==true
+    end
+    function sectionControllers.example.label(parent,value,wrap)
+        local label,r=labelRow(parent,value,14)
+        sectionControllers.example.resizeLabel(label,r,wrap);return label,r
+    end
+    function sectionControllers.example.divider(parent)
+        local r=row(parent,7);local line=frame(r,UDim2.new(0,0,.5,0),UDim2.new(1,0,0,1),'Outline');line.BackgroundTransparency=.6;return line
+    end
+    function sectionControllers.example.container(parent)
+        local body=row(parent,0);body.AutomaticSize=Enum.AutomaticSize.Y
+        new('UIListLayout',{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},body)
+        return body
+    end
+    function sectionControllers.example.tabbox(parent,methods,decorate,uid)
+        local body,shell=sectionTitle(parent,'Tabs',uid(),{settings=true})
+        sectionControllers[shell]()
+        local header=rawRow(body,20)
+        local tabs,selected={},nil
+        local box={Tabs=tabs,Holder=shell}
+        local function select(name)
+            selected=name
+            for key,tab in pairs(tabs) do tab._body.Visible=key==name;bind(tab.Button,'TextColor3',key==name and 'SelectedText' or 'Unselected') end
+            local chosen=tabs[name]
+            if chosen then
+                local p,s=chosen.Button.Position,chosen.Button.Size
+                animate(box.Selection,{Position=p,Size=s},motion.Tab)
+            end
+        end
+        box.Selection=frame(header,UDim2.new(),UDim2.fromOffset(54,18),'SelectedSurface');round(box.Selection,4)
+        function box:AddTab(name)
+            assert(not tabs[name],'Duplicate tabbox tab')
+            local count=0;for _ in pairs(tabs) do count=count+1 end
+            local b=button(header,name,UDim2.fromOffset(count*58,0),UDim2.fromOffset(54,18));b.BackgroundTransparency=1;b.ZIndex=2
+            local container=sectionControllers.example.container(body);container.Name='Tabbox_'..name
+            container:SetAttribute('SearchVariant',name)
+            sectionControllers[container]=function() select(name);return true end
+            local tab=setmetatable({_body=container,Button=b}, {__index=methods});tabs[name]=tab
+            connectOwned(b,b.Activated,function() select(name) end)
+            function tab:ShowTab() select(name) end
+            select(selected or name);return tab
+        end
+        return box
+    end
+    Library:_attach(sectionControllers.api,sectionControllers.example)
+
     options.Build(sectionControllers.api)
 
 
@@ -2260,7 +2420,7 @@ function Library.CreateWindow(options,colonOptions)
 
     local configRemote
     local configs,selectedConfig={},nil
-    local configCol=column(pages.Settings,0,columnWidth)
+    local configCol=column(pages[options.SettingsPage or "Settings"],0,columnWidth)
     sectionTitle(configCol,"Profiles",nil,{settings=true})
     local configPanel=row(configCol,114)
     local configList=new("ScrollingFrame",{Name="ConfigList",Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,0,0,44),BackgroundColor3=theme.Inline,BorderSizePixel=0,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ScrollBarThickness=2},configPanel)
@@ -2346,12 +2506,13 @@ function Library.CreateWindow(options,colonOptions)
         end)
         task.spawn(function()
             local ok,result=true,nil
-            if configRemote then ok,result=pcall(function() return configRemote:InvokeServer(action,name,payload) end) end
+            if configRemote then ok,result=pcall(function() return configRemote:InvokeServer(action,name,payload) end)
+            elseif Library.SaveManager.Library==Library then ok,result=pcall(function() return Library.SaveManager:_action(action,name,payload) end) end
             if not alive or requestSerial~=serial then return end
             busy=false
             if not ok or (result and (type(result)~="table" or result.ok==false)) then notify(scriptName,type(result)=="table" and result.error or "Config request failed.");return end
             if result and type(result.configs)=="table" then configs=result.configs end
-            if action=="save" then configs[name]=payload;selectedConfig=name;notify(result and result.storage=="persistent" and "Saved" or "Saved in session",name)
+            if action=="save" then configs[name]=result and result.configs and result.configs[name] or payload;selectedConfig=name;notify(result and result.storage=="persistent" and "Saved" or "Saved in session",name)
             elseif action=="load" then if configs[name] then restore(configs[name]);notify("Loaded",name) end
             elseif action=="delete" then configs[name]=nil;selectedConfig=nil;notify("Deleted",name)
             elseif action=="auto" then notify("Auto Load Config",name)
@@ -2363,7 +2524,20 @@ function Library.CreateWindow(options,colonOptions)
         local b=button(configPanel,entry[1],UDim2.new((i-1)%2*.5,(i-1)%2*2,0,72+math.floor((i-1)/2)*22),UDim2.new(.5,-2,0,18))
         connectOwned(b,b.Activated,function() configAction(entry[2]) end)
     end
-    local menuCol=column(pages.Settings,rightColumnX,columnWidth)
+    sectionControllers.example.snapshot=snapshot
+    sectionControllers.example.restore=restore
+    sectionControllers.example.configPanel=configPanel
+    sectionControllers.example.configList=function() configAction("list") end
+    sectionControllers.example.buildConfig=function(tab)
+        configCol.Parent=tab.Right;configCol.Size=UDim2.new(1,0,0,200);configCol.Visible=true
+    end
+    if options.Compatibility then
+        configCol.Visible=false
+        actionRow(configCol,'Set Autoload',function() configAction('auto') end)
+        actionRow(configCol,'Load Autoload',function() Library.SaveManager:LoadAutoloadConfig() end)
+    end
+    local menuCol=column(pages[options.SettingsPage or "Settings"],rightColumnX,columnWidth)
+    if options.Compatibility then menuCol.Visible=false end
     sectionTitle(menuCol,"Menu",nil,{settings=true})
     keybind(menuCol,"Menu Bind","MenuBind","Z")
     toggle(menuCol,"Watermark","WatermarkVisible",true,function(shown)
@@ -2549,6 +2723,8 @@ function Library.CreateWindow(options,colonOptions)
             entry.haystack=normalized(label.." "..entry.id.." "..entry.kind.." "..path.." "..(terms or ""))
             entries[#entries+1]=entry
         end
+        local function reindex()
+            entries={}
         for _,tab in ipairs(options.Pages) do
             for _,object in ipairs(pages[tab]:GetDescendants()) do
                 local label=object:GetAttribute("SearchLabel")
@@ -2564,6 +2740,8 @@ function Library.CreateWindow(options,colonOptions)
                 end
             end
         end
+        end
+        reindex()
         local function activeResults()
             return searchPopup and popup==searchPopup and searchPopup.Parent and not searchPopup:GetAttribute("Closing")
         end
@@ -2636,6 +2814,11 @@ function Library.CreateWindow(options,colonOptions)
                     end)
                 end)
             end
+            local ancestor=entry.target
+            while ancestor and ancestor~=main do
+                if ancestor~=entry.section and sectionControllers[ancestor] then sectionControllers[ancestor]() end
+                ancestor=ancestor.Parent
+            end
             local opened=true
             if entry.section and sectionControllers[entry.section] then
                 opened=sectionControllers[entry.section](function()
@@ -2657,6 +2840,7 @@ function Library.CreateWindow(options,colonOptions)
         end
         appearanceRefreshers[#appearanceRefreshers+1]=function() if activeResults() then paintResults() end end
         local function update()
+            reindex()
             local query=normalized(input.Text)
             clear.Visible=input.Text~=""
             if query=="" then hideResults();return end
@@ -2785,7 +2969,8 @@ function Library.CreateWindow(options,colonOptions)
         end
         if input.KeyCode==Enum.KeyCode.Escape then closePopup() end
         local key=input.KeyCode~=Enum.KeyCode.Unknown and input.KeyCode.Name or input.UserInputType.Name
-        if key==values.MenuBind then setWindowVisible(main,not main:GetAttribute("VisibleTarget"));closePopup() end
+        local menuId=Library.ToggleKeybind and Library.ToggleKeybind._nativeId or 'MenuBind'
+        if key==values[menuId] then setWindowVisible(main,not main:GetAttribute("VisibleTarget"));closePopup() end
         keybindRecords.dispatch(input)
     end)
     for _,input in ipairs(gui:GetDescendants()) do
@@ -2829,7 +3014,7 @@ function Library.CreateWindow(options,colonOptions)
                 seconds=math.floor(seconds)
                 clock=string.format('%02d:%02d:%02d',math.floor(seconds/3600),math.floor(seconds/60)%60,seconds%60)
             end
-            local message=string.format('%s FPS  ·  %s  ·  %s  ·  Server %s',fps and tostring(fps) or '—',player.Name,executor,clock)
+            local message=api.customText or string.format('%s FPS  ·  %s  ·  %s  ·  Server %s',fps and tostring(fps) or '—',player.Name,executor,clock)
             if details.Text~=message then details.Text=message end
             mark:SetAttribute('FPS',fps);mark:SetAttribute('PlayerName',player.Name)
             mark:SetAttribute('Executor',executor);mark:SetAttribute('ServerTime',clock)
@@ -2844,6 +3029,7 @@ function Library.CreateWindow(options,colonOptions)
             end
             mark:SetAttribute('Moved',api.moved)
         end
+        function api.setText(value) api.customText=value;refresh() end
         function api.getLayout() return mark.Position.X.Offset,mark.Position.Y.Offset,api.moved end
         function api.setLayout(x,y,moved)
             api.moved=moved==true
@@ -3334,7 +3520,8 @@ function Library.CreateWindow(options,colonOptions)
     sectionControllers.syncRuntime()
     setTab(currentTab);updateBindList();defaultSnapshot=snapshot()
     motionReady=true
-    main.GroupTransparency=1;main.WindowScale.Scale=1;presentation.playIntro(false)
+    main.GroupTransparency=1;main.WindowScale.Scale=1
+    if options.AutoShow==false then setWindowVisible(main,false,true) else presentation.playIntro(false) end
 
     task.spawn(function()
         
@@ -3363,4 +3550,341 @@ function Library.CreateWindow(options,colonOptions)
 
     return sectionControllers.api
 end
+function Library:_attach(window,c)
+    self.CurrentWindow=window;self.Unloaded=false
+    self.Toggles={};self.Options={};self._unload={};self._context=c
+    local environment=type(getgenv)=='function' and getgenv() or _G
+    environment.Toggles=self.Toggles;environment.Options=self.Options;environment.Library=self
+    local library=self
+    local serial=0
+    local function uid() serial=serial+1;return 'Example_'..serial end
+    local function safe(fn,...)
+        if type(fn)~='function' then return end
+        local ok,err=pcall(fn,...)
+        if not ok then warn('Spectrohook callback: '..tostring(err)) end
+    end
+    local function object(id,kind,read,write,info)
+        assert(not library.Toggles[id] and not library.Options[id],'Duplicate control: '..tostring(id))
+        local item={Type=kind,Index=id,_nativeId=id,_listeners={},Callback=info and info.Callback,_revision=0}
+        setmetatable(item,{__index=function(_,key) if key=='Value' then return read() end end})
+        function item:OnChanged(fn)
+            assert(type(fn)=='function','OnChanged requires a function')
+            local link={Connected=true}
+            self.Changed=fn
+            self._listeners[#self._listeners+1]={fn,link}
+            function link:Disconnect() self.Connected=false end
+            safe(fn,read())
+            return link
+        end
+        function item:SetValue(value)
+            assert(not library.Unloaded,'Spectrohook is unloaded')
+            local revision=self._revision
+            local result=write(value)
+            if self._revision==revision then self:_emit() end
+            return result
+        end
+        function item:_emit()
+            if library.Unloaded or self._batch then return end
+            self._revision=self._revision+1
+            local value=read()
+            if self.Callback and not self._skipCallback then safe(self.Callback,value) end
+            for _,entry in ipairs(self._listeners) do if entry[2].Connected then safe(entry[1],value) end end
+        end
+        function item:_sync(value)
+            self._skipCallback=true
+            local ok,err=pcall(write,value)
+            self._skipCallback=false
+            if not ok then error(err,0) end
+        end
+        c.observe(id,function() item:_emit() end)
+        if kind=='Toggle' then library.Toggles[id]=item else library.Options[id]=item end
+        return item
+    end
+    local groupMethods={}
+    local function decorate(target,parentToggle)
+        function target:AddColorPicker(id,info)
+            info=info or {};local initial=info.Default or Color3.new(1,1,1)
+            c.color(self._body,info.Title or self.Text or 'Color',id,initial)
+            local picker=object(id,'ColorPicker',function() return c.parseColor(c.get(id)) end,function(value) c.set(id,value) end,info)
+            function picker:SetValueRGB(value,alpha)
+                assert(typeof(value)=='Color3','SetValueRGB requires Color3')
+                self._batch=true
+                c.set(id,value)
+                if c.has(id..'Transparency') then c.set(id..'Transparency',alpha or 0) end
+                self._batch=false
+                self:_emit()
+            end
+            function picker:SetValue(value,alpha)
+                if typeof(value)=='Color3' then return self:SetValueRGB(value,alpha) end
+                assert(type(value)=='table','SetValue requires HSV components')
+                return self:SetValueRGB(Color3.fromHSV(value[1],value[2],value[3]),alpha)
+            end
+            if info.Transparency~=nil then
+                c.slider(self._body,'Transparency',id..'Transparency',info.Transparency,0,1,.01,'')
+                local mt=getmetatable(picker);local old=mt.__index
+                mt.__index=function(t,key) if key=='Transparency' then return c.get(id..'Transparency') end;return old(t,key) end
+                c.observe(id..'Transparency',function() picker:_emit() end)
+            end
+            return picker
+        end
+        function target:AddKeyPicker(id,info)
+            info=info or {}
+            local aliases={MB1='MouseButton1',MB2='MouseButton2',MB3='MouseButton3',None='Unknown'}
+            local reverse={MouseButton1='MB1',MouseButton2='MB2',MouseButton3='MB3',Unknown='None'}
+            local function key(value) return aliases[value] or value or 'Unknown' end
+            local row=c.keybind(self._body,info.Text or self.Text or 'Bind',id,key(info.Default),nil,info.Text or self.Text or id)
+            local record=c.findBind(id);record.noUI=info.NoUI==true
+            local infoCopy={}
+            local picker=object(id,'KeyPicker',function() local value=c.get(id);return reverse[value] or value end,function(value)
+                if type(value)=='table' then
+                    c.set(id,key(value[1]));if value[2] then c.set(id..'Mode',value[2]) end
+                else c.set(id,key(value)) end
+            end,infoCopy)
+            picker._clicks={};picker.Row=row
+            function picker:GetState() return record.active==true end
+            function picker:OnClick(fn) assert(type(fn)=='function');self._clicks[#self._clicks+1]=fn;return self end
+            local mt=getmetatable(picker);local old=mt.__index
+            mt.__index=function(t,k) if k=='Mode' then return record.mode end;return old(t,k) end
+            picker:OnChanged(function()
+                if info.ChangedCallback then
+                    local current=c.get(id)
+                    safe(info.ChangedCallback,current:match('^MouseButton') and Enum.UserInputType[current] or Enum.KeyCode[current])
+                end
+            end)
+            c.bindChanged(id,function(active)
+                safe(info.Callback,active)
+                if record.mode=='Toggle' then for _,fn in ipairs(picker._clicks) do safe(fn,active) end end
+            end)
+            if info.SyncToggleState and parentToggle then
+                record.featureId=parentToggle._nativeId
+                parentToggle:OnChanged(function() c.setBindActive(record,parentToggle.Value) end)
+                c.setBindActive(record,parentToggle.Value)
+            end
+            c.set(id..'Mode',info.Mode or 'Toggle');c.updateBinds()
+            return picker
+        end
+        return target
+    end
+    function groupMethods:AddToggle(id,info)
+        info=info or {};local row=c.toggle(self._body,info.Text or id,id,info.Default==true)
+        local item=object(id,'Toggle',function() return c.get(id)==true end,function(value) c.set(id,value==true) end,info)
+        item.Row=row;item._body=self._body;item.Text=info.Text or id
+        if info.Tooltip then c.tooltip(row,info.Tooltip) end
+        return decorate(item,item)
+    end
+    function groupMethods:AddSlider(id,info)
+        info=info or {};local rounding=info.Rounding or 0
+        assert(type(info.Min)=='number' and type(info.Max)=='number' and info.Max>info.Min,'Slider requires Min < Max')
+        local row=c.slider(self._body,info.Text or id,id,info.Default or info.Min,info.Min,info.Max,10^-rounding,info.Suffix or '')
+        local item=object(id,'Slider',function() return c.get(id) end,function(value) c.set(id,value) end,info)
+        item.Row=row;if info.Tooltip then c.tooltip(row,info.Tooltip) end;return item
+    end
+    function groupMethods:AddDropdown(id,info)
+        info=info or {};local choices={}
+        local function replace(input) for i=#choices,1,-1 do choices[i]=nil end;for _,v in ipairs(input or {}) do choices[#choices+1]=tostring(v) end end
+        local function special()
+            local result={}
+            if info.SpecialType=='Player' then for _,p in ipairs(c.players:GetPlayers()) do result[#result+1]=p.Name end
+            elseif info.SpecialType=='Team' then for _,team in ipairs(game:GetService('Teams'):GetTeams()) do result[#result+1]=team.Name end
+            else return info.Values or {} end
+            table.sort(result);return result
+        end
+        replace(special())
+        local default=type(info.Default)=='number' and choices[info.Default] or info.Default
+        if info.Multi then default=type(default)=='table' and default or (default and {[default]=true} or {}) end
+        local row=c.dropdown(self._body,info.Text or id,id,choices,default,info.Multi==true)
+        local item=object(id,'Dropdown',function() return c.get(id) end,function(value) c.set(id,value) end,info)
+        item.Row=row;item.Values=choices;item.Multi=info.Multi==true;item.SpecialType=info.SpecialType
+        if info.Tooltip then c.tooltip(row,info.Tooltip) end
+        function item:SetValues(input) local previous=c.get(id);replace(input);row:SetAttribute('SearchTerms',table.concat(choices,' '));c.set(id,previous) end
+        if info.SpecialType=='Player' then
+            local function refresh() item:SetValues(special()) end
+            c.connect(c.players.PlayerAdded,refresh);c.connect(c.players.PlayerRemoving,refresh)
+        elseif info.SpecialType=='Team' then
+            local teams=game:GetService('Teams');c.connect(teams.ChildAdded,function() item:SetValues(special()) end);c.connect(teams.ChildRemoved,function() item:SetValues(special()) end)
+        end
+        return item
+    end
+    function groupMethods:AddInput(id,info)
+        info=info or {};local box,row=c.input(self._body,info.Text or id,id,tostring(info.Default or ''),info)
+        local item=object(id,'Input',function() return c.get(id) end,function(value) c.set(id,tostring(value)) end,info)
+        item.Box=box;item.Row=row;if info.Tooltip then c.tooltip(row,info.Tooltip) end;return item
+    end
+    function groupMethods:AddLabel(value,wrap)
+        local label,row=c.label(self._body,tostring(value),wrap)
+        local item={Text=tostring(value),Label=label,Row=row,_body=self._body}
+        function item:SetText(text) self.Text=tostring(text);label.Text=self.Text;c.resizeLabel(label,row,wrap) end
+        return decorate(item)
+    end
+    function groupMethods:AddDivider() return c.divider(self._body) end
+    function groupMethods:AddButton(info,fn)
+        if type(info)=='string' then info={Text=info,Func=fn} end
+        assert(type(info)=='table' and type(info.Func)=='function','Button requires Func')
+        local item={_body=self._body,_buttons={}}
+        -- Each sub-button keeps its own handler while sharing the parent row.
+        local function append(config)
+            local last=-math.huge
+            local b=c.action(item._body,config.Text or 'Button',function()
+                local now=os.clock()
+                if config.DoubleClick and now-last>.4 then last=now;return end
+                last=-math.huge;safe(config.Func)
+            end)
+            if #item._buttons>0 then local empty=b.Parent;b.Parent=item._buttons[1].Parent;empty:Destroy() end
+            item._buttons[#item._buttons+1]=b;item.Button=b
+            local count=#item._buttons
+            for index,part in ipairs(item._buttons) do part.Position=UDim2.new((index-1)/count,(index-1)*2,0,0);part.Size=UDim2.new(1/count,-(count-1)*2,1,0) end
+            if config.Tooltip then c.tooltip(b,config.Tooltip) end
+            return item
+        end
+        function item:AddButton(config,callback) if type(config)=='string' then config={Text=config,Func=callback} end;assert(type(config.Func)=='function');return append(config) end
+        return append(info)
+    end
+    function groupMethods:AddDependencyBox()
+        local body=c.container(self._body);local box=setmetatable({_body=body,Dependencies={}}, {__index=groupMethods})
+        function box:SetupDependencies(dependencies)
+            for _,link in ipairs(self._links or {}) do link:Disconnect() end
+            self._links={};self.Dependencies=dependencies
+            local function refresh()
+                local visible=true
+                for _,entry in ipairs(dependencies) do if entry[1].Value~=entry[2] then visible=false;break end end
+                body.Visible=visible
+            end
+            for _,entry in ipairs(dependencies) do self._links[#self._links+1]=entry[1]:OnChanged(refresh) end
+            refresh();return self
+        end
+        return box
+    end
+    local function group(parent,name)
+        local body,shell=c.group(parent,name,uid());local g=setmetatable({_body=body,Holder=shell}, {__index=groupMethods})
+        return g
+    end
+    window.Tabs={}
+    function window:AddTab(name)
+        if self.Tabs[name] then return self.Tabs[name] end
+        local page=c.addTab(name);local left,right=c.columns(page,name)
+        local tab={Name=name,Page=page,Left=left,Right=right}
+        function tab:AddLeftGroupbox(title) return group(left,title) end
+        function tab:AddRightGroupbox(title) return group(right,title) end
+        function tab:AddLeftTabbox() return c.tabbox(left,groupMethods,decorate,uid) end
+        function tab:AddRightTabbox() return c.tabbox(right,groupMethods,decorate,uid) end
+        function tab:AddGroupbox(info) return group(info.Side==2 and right or left,info.Name or 'Groupbox') end
+        function tab:AddTabbox(info) return c.tabbox(info.Side==2 and right or left,groupMethods,decorate,uid) end
+        function tab:ShowTab() c.selectTab(name) end
+        self.Tabs[name]=tab;return tab
+    end
+    function window:SetWindowTitle(title) c.setTitle(tostring(title));self.Name=tostring(title) end
+    window.Holder=c.main
+    library.KeybindFrame=setmetatable({}, {
+        __index=function(_,key) if key=='Visible' then return c.bindFrame:GetAttribute('VisibleTarget')==true end;return c.bindFrame[key] end,
+        __newindex=function(_,key,value) if key=='Visible' then c.showBinds(value) else c.bindFrame[key]=value end end,
+    })
+    c.destroyed(function()
+        library.Unloaded=true
+        for _,fn in ipairs(library._unload) do safe(fn) end
+        library._unload={}
+    end)
+    return window
+end
+
+function Library:OnUnload(fn) assert(type(fn)=='function');self._unload[#self._unload+1]=fn end
+function Library:Unload() if self.CurrentWindow and not self.Unloaded then self.CurrentWindow:Destroy() end end
+function Library:Toggle() self._context.toggleMenu() end
+function Library:SetWatermarkVisibility(value) self._context.set('WatermarkVisible',value==true) end
+function Library:SetWatermark(value) self._context.setWatermark(tostring(value)) end
+function Library:Notify(text,duration) self._context.notify(tostring(text),duration) end
+function Library:GiveSignal(signal) self:OnUnload(function() signal:Disconnect() end);return signal end
+
+Library.SaveManager={Ignore={},Stores={},Folder='Spectrohook/configs'}
+function Library.SaveManager:SetLibrary(value) self.Library=value end
+function Library.SaveManager:IgnoreThemeSettings() self.IgnoreThemes=true end
+function Library.SaveManager:SetIgnoreIndexes(ids) self.Ignore={};for _,id in ipairs(ids) do self.Ignore[id]=true end end
+function Library.SaveManager:SetFolder(folder)
+    assert(type(folder)=='string' and not folder:find('%.%.') and not folder:match('^[/\\]'),'Invalid config folder')
+    self.Folder=folder;self.Stores[folder]=self.Stores[folder] or {configs={}};self.Store=self.Stores[folder]
+end
+function Library.SaveManager:_action(action,name,payload)
+    if not self.Store then self:SetFolder(self.Folder) end
+    local store=self.Store
+    local filesystem=type(writefile)=='function' and type(readfile)=='function' and type(makefolder)=='function'
+    local function json() return game:GetService('HttpService') end
+    local function folder()
+        local current=''
+        for part in self.Folder:gmatch('[^/]+') do current=current=='' and part or current..'/'..part;pcall(makefolder,current) end
+    end
+    local function path(value) assert(value and value:match('^[%w _.-]+$') and not value:find('%.%.'),'Invalid profile name');return self.Folder..'/'..value..'.json' end
+    if action=='save' then
+        local filtered={}
+        for id,value in pairs(payload or {}) do
+            if not self.Ignore[id] and not self.Ignore[id:gsub('Mode$','')] and not (self.IgnoreThemes and (id=='ThemePreset' or id=='CustomTheme' or id:match('^Theme%d') or (Library.ThemeManager.Indexes or {})[id])) then filtered[id]=value end
+        end
+        if filesystem then folder();writefile(path(name),json():JSONEncode(filtered)) end
+        store.configs[name]=filtered
+    elseif action=='load' then
+        if filesystem then local ok,value=pcall(function() return json():JSONDecode(readfile(path(name))) end);if ok and type(value)=='table' then store.configs[name]=value end end
+        assert(store.configs[name],'Profile not found')
+    elseif action=='delete' then
+        if filesystem and type(delfile)=='function' then pcall(delfile,path(name)) end
+        store.configs[name]=nil
+    elseif action=='auto' then
+        store.auto=name
+        if filesystem then folder();writefile(self.Folder..'/autoload.txt',name) end
+    elseif action=='list' and filesystem and type(listfiles)=='function' then
+        folder()
+        for _,file in ipairs(listfiles(self.Folder)) do
+            local item=file:gsub('\\','/'):match('/([^/]+)%.json$')
+            if item then local ok,value=pcall(function() return json():JSONDecode(readfile(file)) end);if ok and type(value)=='table' then store.configs[item]=value end end
+        end
+    end
+    return {ok=true,configs=store.configs,auto=store.auto,storage=filesystem and 'persistent' or 'session'}
+end
+function Library.SaveManager:BuildConfigSection(tab) self.Library._context.buildConfig(tab);self.Library._context.configList();return self.Library._context.configPanel end
+function Library.SaveManager:LoadAutoloadConfig()
+    local store=self.Store
+    if not store then self:SetFolder(self.Folder);store=self.Store end
+    if type(readfile)=='function' then local ok,value=pcall(readfile,self.Folder..'/autoload.txt');if ok then store.auto=value end end
+    if store.auto then local result=self:_action('load',store.auto);self.Library._context.restore(result.configs[store.auto]) end
+end
+Library.ThemeManager={Folder='Spectrohook/themes',Stores={},Indexes={ExampleTheme=true,ExampleAccent=true,ExampleBackground=true,ExampleThemeName=true}}
+function Library.ThemeManager:SetLibrary(value) self.Library=value end
+function Library.ThemeManager:SetFolder(folder)
+    assert(type(folder)=='string' and not folder:find('%.%.') and not folder:match('^[/\\]'),'Invalid theme folder')
+    self.Folder=folder;self.Stores[folder]=self.Stores[folder] or {};self.Store=self.Stores[folder]
+end
+function Library.ThemeManager:SaveCustomTheme(name)
+    assert(type(name)=='string' and name:match('^[%w _.-]+$') and not name:find('%.%.'),'Enter a valid theme name')
+    if not self.Store then self:SetFolder(self.Folder) end
+    local snapshot=self.Library._context.snapshot()
+    local data={CustomTheme=snapshot.CustomTheme,ThemePreset='Custom'}
+    if type(writefile)=='function' and type(makefolder)=='function' then
+        local current='';for part in self.Folder:gmatch('[^/]+') do current=current=='' and part or current..'/'..part;pcall(makefolder,current) end
+        writefile(self.Folder..'/'..name..'.json',game:GetService('HttpService'):JSONEncode(data))
+    end
+    self.Store[name]=data;return true
+end
+function Library.ThemeManager:LoadCustomTheme(name)
+    assert(type(name)=='string' and name:match('^[%w _.-]+$') and not name:find('%.%.'),'Enter a valid theme name')
+    if not self.Store then self:SetFolder(self.Folder) end
+    local data=self.Store[name]
+    if type(readfile)=='function' then local ok,value=pcall(function() return game:GetService('HttpService'):JSONDecode(readfile(self.Folder..'/'..name..'.json')) end);if ok then data=value end end
+    assert(type(data)=='table','Theme not found')
+    self.Library._context.restore(data);return true
+end
+function Library.ThemeManager:ApplyToTab(tab)
+    local group=tab:AddRightGroupbox('Theme')
+    return self:ApplyToGroupbox(group)
+end
+function Library.ThemeManager:ApplyToGroupbox(group)
+    local library=self.Library
+    local preset=group:AddDropdown('ExampleTheme',{Text='Theme',Values={'White','Mint','Default','Amethyst','Rose','Yellow','Graphite','Custom'},Default='White',Callback=function(value) library._context.set('ThemePreset',value) end})
+    local accent=group:AddLabel('Accent'):AddColorPicker('ExampleAccent',{Default=library._context.accent(),Callback=function(value) library._context.set('Theme1',value) end})
+    local background=group:AddLabel('Background'):AddColorPicker('ExampleBackground',{Default=library._context.background(),Callback=function(value) library._context.set('Theme2',value) end})
+    library._context.observe('ThemePreset',function(value) preset:_sync(value) end)
+    library._context.observe('Theme1',function(value) accent:_sync(value) end)
+    library._context.observe('Theme2',function(value) background:_sync(value) end)
+    group:AddInput('ExampleThemeName',{Text='Custom theme',Default='my-theme',Finished=true})
+    group:AddButton({Text='Save theme',Func=function() self:SaveCustomTheme(library.Options.ExampleThemeName.Value);library:Notify('Theme saved') end})
+        :AddButton({Text='Load theme',Func=function() self:LoadCustomTheme(library.Options.ExampleThemeName.Value);library:Notify('Theme loaded') end})
+    return group
+end
+
 return Library
