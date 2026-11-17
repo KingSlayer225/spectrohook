@@ -1,5 +1,5 @@
 -- Lua | library.lua | Spectrohook UI library
-local Library={Version="2.0.0"}
+local Library={Version="2.0.1",NoRainbow=true}
 function Library.CreateWindow(options,colonOptions)
     if options==Library then options=colonOptions end
     options=options or {}
