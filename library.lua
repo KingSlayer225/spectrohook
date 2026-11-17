@@ -2529,7 +2529,10 @@ function Library.CreateWindow(options,colonOptions)
     sectionControllers.example.configPanel=configPanel
     sectionControllers.example.configList=function() configAction("list") end
     sectionControllers.example.buildConfig=function(tab)
-        configCol.Parent=tab.Right;configCol.Size=UDim2.new(1,0,0,200);configCol.Visible=true
+        configCol.Parent=tab.Right;configCol.Visible=true
+        local layout=configCol:FindFirstChildOfClass("UIListLayout")
+        local function fit() configCol.Size=UDim2.new(1,0,0,math.max(28,layout.AbsoluteContentSize.Y));configCol.CanvasSize=UDim2.new() end
+        connectOwned(configCol,layout:GetPropertyChangedSignal("AbsoluteContentSize"),fit);fit()
     end
     if options.Compatibility then
         configCol.Visible=false
@@ -3870,7 +3873,7 @@ function Library.ThemeManager:LoadCustomTheme(name)
     self.Library._context.restore(data);return true
 end
 function Library.ThemeManager:ApplyToTab(tab)
-    local group=tab:AddRightGroupbox('Theme')
+    local group=tab:AddLeftGroupbox('Theme')
     return self:ApplyToGroupbox(group)
 end
 function Library.ThemeManager:ApplyToGroupbox(group)
