@@ -2344,18 +2344,8 @@ function Library.CreateWindow(options,colonOptions)
     end
     function sectionControllers.example.fitLayout()
         if not options.Compatibility or not main.Parent then return end
-        local height=0
-        local page=pages[currentTab]
-        for _,child in ipairs(page:GetChildren()) do
-            if child:IsA('ScrollingFrame') and child.Visible then
-                local layout=child:FindFirstChildOfClass('UIListLayout')
-                if layout then height=math.max(height,layout.AbsoluteContentSize.Y/math.max(uiScale.Scale,.001)) end
-            end
-        end
-        local left,top,right,bottom=viewportBounds()
-        local target=math.min(bottom-top,math.max(contentTop+36,contentTop+8+height))
-        if math.abs(main.Size.Y.Offset-target)>.1 then
-            main.Size=UDim2.fromOffset(mainWidth,target)
+        if main.Size.X.Offset~=mainWidth or main.Size.Y.Offset~=mainHeight then
+            main.Size=UDim2.fromOffset(mainWidth,mainHeight)
             main.Position=windowPosition(main,main.Position.X.Offset,main.Position.Y.Offset)
         end
     end
