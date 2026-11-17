@@ -1577,6 +1577,7 @@ function Library.CreateWindow(options,colonOptions)
         currentTab=name
         switchMainPages(name,not switching)
         paintTabs()
+        if options.Compatibility and Library._context and Library._context.fitLayout then task.defer(Library._context.fitLayout) end
     end
     appearanceRefreshers[#appearanceRefreshers+1]=paintTabs
     local tabX=0
@@ -2341,6 +2342,32 @@ function Library.CreateWindow(options,colonOptions)
         connectOwned(box,box.FocusLost,function(enter) if not info.Finished or enter then set(box.Text) else updating=true;box.Text=values[id];updating=false end end)
         return box,r
     end
+    function sectionControllers.example.fitLayout()
+        if not options.Compatibility or not main.Parent then return end
+        local height=0
+        local page=pages[currentTab]
+        for _,child in ipairs(page:GetChildren()) do
+            if child:IsA('ScrollingFrame') and child.Visible then
+                local layout=child:FindFirstChildOfClass('UIListLayout')
+                if layout then height=math.max(height,layout.AbsoluteContentSize.Y/math.max(uiScale.Scale,.001)) end
+            end
+        end
+        local left,top,right,bottom=viewportBounds()
+        local target=math.min(bottom-top,math.max(contentTop+36,contentTop+8+height))
+        if math.abs(main.Size.Y.Offset-target)>.1 then
+            main.Size=UDim2.fromOffset(mainWidth,target)
+            main.Position=windowPosition(main,main.Position.X.Offset,main.Position.Y.Offset)
+        end
+    end
+    sectionControllers.example.columns=function(page,name)
+        local left,right=featureColumns(page,name)
+        for _,column in ipairs({left,right}) do
+            local layout=column:FindFirstChildOfClass('UIListLayout')
+            connectOwned(column,layout:GetPropertyChangedSignal('AbsoluteContentSize'),sectionControllers.example.fitLayout)
+        end
+        task.defer(sectionControllers.example.fitLayout)
+        return left,right
+    end
     function sectionControllers.example.tooltip(anchor,message)
         local tip,revision=nil,0
         local function hide() revision=revision+1;if tip then tip:Destroy();tip=nil end end
@@ -2377,8 +2404,26 @@ function Library.CreateWindow(options,colonOptions)
         local r=row(parent,7);local line=frame(r,UDim2.new(0,0,.5,0),UDim2.new(1,0,0,1),'Outline');line.BackgroundTransparency=.6;return line
     end
     function sectionControllers.example.container(parent)
-        local body=row(parent,0);body.AutomaticSize=Enum.AutomaticSize.Y
-        new('UIListLayout',{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},body)
+        local body=row(parent,0)
+        local layout=new('UIListLayout',{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},body)
+        local busy=false
+        local function fit()
+            if busy or not body.Parent then return end
+            busy=true
+            local height=math.max(0,layout.AbsoluteContentSize.Y/math.max(uiScale.Scale,.001))
+            if body.Size.Y.Offset~=height then body.Size=UDim2.new(1,0,0,height) end
+            busy=false
+        end
+        connectOwned(body,layout:GetPropertyChangedSignal('AbsoluteContentSize'),fit)
+        connectOwned(body,body.DescendantAdded,function(child)
+            if child.Parent==body and child:IsA('GuiObject') then
+                connectOwned(child,child:GetPropertyChangedSignal('Visible'),fit)
+                connectOwned(child,child:GetPropertyChangedSignal('Size'),fit)
+            end
+            task.defer(fit)
+        end)
+        connectOwned(body,body.DescendantRemoving,function() task.defer(fit) end)
+        task.defer(fit)
         return body
     end
     function sectionControllers.example.tabbox(parent,methods,decorate,uid)
@@ -2400,7 +2445,9 @@ function Library.CreateWindow(options,colonOptions)
         function box:AddTab(name)
             assert(not tabs[name],'Duplicate tabbox tab')
             local count=0;for _ in pairs(tabs) do count=count+1 end
-            local b=button(header,name,UDim2.fromOffset(count*58,0),UDim2.fromOffset(54,18));b.BackgroundTransparency=1;b.ZIndex=2
+            local width=math.max(40,math.ceil(game:GetService('TextService'):GetTextSize(name,8,uiFont,Vector2.new(1000,18)).X)+16)
+            local x=0;for _,existing in pairs(tabs) do x=x+existing.Button.Size.X.Offset+4 end
+            local b=button(header,name,UDim2.fromOffset(x,0),UDim2.fromOffset(width,18));b.BackgroundTransparency=1;b.ZIndex=2
             local container=sectionControllers.example.container(body);container.Name='Tabbox_'..name
             container:SetAttribute('SearchVariant',name)
             sectionControllers[container]=function() select(name);return true end
@@ -2531,7 +2578,7 @@ function Library.CreateWindow(options,colonOptions)
     sectionControllers.example.buildConfig=function(tab)
         configCol.Parent=tab.Right;configCol.Visible=true
         local layout=configCol:FindFirstChildOfClass("UIListLayout")
-        local function fit() configCol.Size=UDim2.new(1,0,0,math.max(28,layout.AbsoluteContentSize.Y));configCol.CanvasSize=UDim2.new() end
+        local function fit() configCol.Size=UDim2.new(1,0,0,math.max(28,layout.AbsoluteContentSize.Y/math.max(uiScale.Scale,.001)));configCol.CanvasSize=UDim2.new() end
         connectOwned(configCol,layout:GetPropertyChangedSignal("AbsoluteContentSize"),fit);fit()
     end
     if options.Compatibility then
@@ -3794,6 +3841,28 @@ function Library:Unload() if self.CurrentWindow and not self.Unloaded then self.
 function Library:Toggle() self._context.toggleMenu() end
 function Library:SetWatermarkVisibility(value) self._context.set('WatermarkVisible',value==true) end
 function Library:SetWatermark(value) self._context.setWatermark(tostring(value)) end
+function Library:StartWatermark()
+    if self._watermarkDriver then self._watermarkDriver:Disconnect() end
+    local name='Unknown'
+    local env=type(getgenv)=='function' and getgenv() or _G
+    for _,key in ipairs({'identifyexecutor','getexecutorname'}) do
+        local provider=env[key] or _G[key]
+        if type(provider)=='function' then
+            local ok,value=pcall(provider)
+            if ok and type(value)=='string' and value:find('%S') then name=value:gsub('%c',' '):sub(1,48);break end
+        end
+    end
+    local elapsed,frames=0,0
+    self._watermarkDriver=self:GiveSignal(game:GetService('RunService').RenderStepped:Connect(function(dt)
+        elapsed=elapsed+dt;frames=frames+1
+        if elapsed<.35 then return end
+        local fps=math.floor(frames/elapsed+.5);elapsed=0;frames=0
+        local player=game:GetService('Players').LocalPlayer
+        local ok,ping=pcall(function() return player:GetNetworkPing()*1000 end)
+        self:SetWatermark(('Spectrohook | %s | %s fps | %s ms'):format(name,fps,ok and math.floor(ping) or '—'))
+    end))
+    return self._watermarkDriver
+end
 function Library:Notify(text,duration) self._context.notify(tostring(text),duration) end
 function Library:GiveSignal(signal) self:OnUnload(function() signal:Disconnect() end);return signal end
 
