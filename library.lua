@@ -3920,7 +3920,7 @@ function Library.ThemeManager:ApplyToGroupbox(group)
 end
 
 
-Library.UIComponentsVersion=1
+Library.UIComponentsVersion=2
 function Library:AttachFeatureToggle(group, control, keepBindRow)
     local featureControls=self._featureControls or {}
     self._featureControls=featureControls
@@ -4242,10 +4242,23 @@ local scriptHeading=Window.Holder:FindFirstChild('SectionTitle',true)
 if scriptHeading then
     headerText.Font=scriptHeading.Font;hudName.Font=scriptHeading.Font;hudHealth.Font=scriptHeading.Font
 end
-local component={Frame=hud}
-local lastPortrait
-function component:SetVisible(value) hud.Visible=value==true end
+local component={Frame=hud,Preview=false}
+local lastPortrait,lastTarget,requestedVisible
+local previewData={Name='Target preview',Health=75,MaxHealth=100,Distance=25,UserId=game:GetService('Players').LocalPlayer.UserId}
+function component:SetVisible(value)
+    requestedVisible=value==true
+    hud.Visible=requestedVisible or self.Preview
+end
+function component:SetPreview(value,data)
+    self.Preview=value==true
+    if data then previewData=data end
+    self:SetTarget(lastTarget)
+    self:SetVisible(requestedVisible)
+end
 function component:SetTarget(data)
+    lastTarget=data
+    if not data and self.Preview then data=previewData end
+    if not data then return end
         local accent=Library._context.accent();hud.BackgroundColor3=Library._context.background();hudHeader.BackgroundColor3=Library._context.background():Lerp(Color3.new(),.16);headerText.TextColor3=accent;track.BackgroundColor3=accent:Lerp(Color3.new(),.8);fill.BackgroundColor3=accent
         hudBody.BackgroundColor3=Library._context.background():Lerp(Color3.new(),.10)
         local textColor=scriptHeading and scriptHeading.TextColor3 or Color3.fromRGB(234,234,234)
