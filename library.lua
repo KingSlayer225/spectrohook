@@ -1,5 +1,5 @@
 -- Lua | library.lua | Spectrohook UI library
-local Library={Version="2.0.1",NoRainbow=true}
+local Library={Version="2.1.0",NoRainbow=true}
 function Library.CreateWindow(options,colonOptions)
     if options==Library then options=colonOptions end
     options=options or {}
@@ -1245,7 +1245,7 @@ function Library.CreateWindow(options,colonOptions)
 
     local headerHeight=28
     local mainWidth=405
-    local mainHeight=485
+    local mainHeight=math.clamp(tonumber(options.Height) or 485,300,900)
     local defaultMainX=(1280-mainWidth)/2
     local defaultMainY=(720-mainHeight)/2
     local navigationTop=headerHeight+7
@@ -3604,7 +3604,17 @@ function Library:_attach(window,c)
     local function decorate(target,parentToggle)
         function target:AddColorPicker(id,info)
             info=info or {};local initial=info.Default or Color3.new(1,1,1)
-            c.color(self._body,info.Title or self.Text or 'Color',id,initial)
+            local swatch=c.color(self._body,info.Title or self.Text or 'Color',id,initial)
+            if self.Row then
+                local obsolete=swatch.Parent
+                swatch.Parent=self.Row
+                self._colorSwatches=self._colorSwatches or {}
+                table.insert(self._colorSwatches,swatch)
+                for index,button in ipairs(self._colorSwatches) do
+                    button.Position=UDim2.new(1,-10-(#self._colorSwatches-index)*18,0,2)
+                end
+                if obsolete~=self.Row then obsolete:Destroy() end
+            end
             local picker=object(id,'ColorPicker',function() return c.parseColor(c.get(id)) end,function(value) c.set(id,value) end,info)
             function picker:SetValueRGB(value,alpha)
                 assert(typeof(value)=='Color3','SetValueRGB requires Color3')
@@ -3907,6 +3917,566 @@ function Library.ThemeManager:ApplyToGroupbox(group)
     group:AddButton({Text='Save theme',Func=function() self:SaveCustomTheme(library.Options.ExampleThemeName.Value);library:Notify('Theme saved') end})
         :AddButton({Text='Load theme',Func=function() self:LoadCustomTheme(library.Options.ExampleThemeName.Value);library:Notify('Theme loaded') end})
     return group
+end
+
+
+Library.UIComponentsVersion=1
+function Library:AttachFeatureToggle(group, control, keepBindRow)
+    local featureControls=self._featureControls or {}
+    self._featureControls=featureControls
+    local row, holder = control.Row, group.Holder
+    featureControls[holder]=control
+    local toggle = row:FindFirstChild('Toggle')
+    assert(toggle, 'Missing feature toggle')
+    toggle.Parent = holder
+    toggle.Name = 'FeatureToggle'
+    toggle.Position = UDim2.new(1, -26, 0, 5.5)
+    toggle.ZIndex = 4
+    local title=holder:FindFirstChild('SectionTitle')
+    local highlight=Instance.new('Frame')
+    highlight.Name='FeatureThemeHighlight'
+    highlight.Size=UDim2.fromScale(1,1)
+    highlight.BackgroundTransparency=.96
+    highlight.BorderSizePixel=0
+    highlight.Active=false
+    highlight.ZIndex=0
+    highlight.Parent=holder
+    local corner=Instance.new('UICorner')
+    corner.CornerRadius=UDim.new(0,6)
+    corner.Parent=highlight
+    local fade=Instance.new('UIGradient')
+    fade.Rotation=45
+    fade.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.1),NumberSequenceKeypoint.new(1,.8)})
+    fade.Parent=highlight
+    local function paintHighlight()
+        if not holder.Parent then return end
+        highlight.BackgroundColor3=Library._context.accent()
+        highlight.Visible=control.Value==true
+        if title then title.TextTransparency=control.Value and 0 or .2 end
+    end
+    control:OnChanged(function(enabled)
+        holder:SetAttribute('Enabled',enabled)
+        paintHighlight()
+    end)
+    local lastAccent
+    Library:GiveSignal(game:GetService('RunService').Heartbeat:Connect(function()
+        local accent=Library._context.accent()
+        if accent~=lastAccent then lastAccent=accent;paintHighlight() end
+    end))
+    local hit = row:FindFirstChild('ToggleHit')
+    if hit then hit.Visible = false; hit.Active = false end
+    if keepBindRow then
+        for _, child in ipairs(row:GetChildren()) do
+            if child:IsA('TextLabel') then
+                child.Text = 'Keybind'
+                child.Position = UDim2.fromOffset(0, 0)
+            end
+        end
+    else
+        row.Visible = false
+    end
+end
+
+
+function Library:SetupSections(Window)
+local featureControls=self._featureControls or {}
+local function setupCollapsedSection(holder,body)
+    local painting=false
+    local function paintSectionState()
+        if painting or not holder.Parent then return end
+        painting=true
+        local control=featureControls[holder]
+        local enabled=control and control.Value==true
+        local base=Library._context.background():Lerp(Color3.new(),.10)
+        holder.BackgroundColor3=base
+        local shade=holder:FindFirstChild('FunctionShade')
+        if shade then shade.Visible=false end
+        local gradient=holder:FindFirstChild('SurfaceGradient')
+        if gradient then gradient.Enabled=false end
+        local highlight=holder:FindFirstChild('FeatureThemeHighlight')
+        if highlight then highlight.Visible=enabled==true end
+        painting=false
+    end
+    Library:GiveSignal(holder:GetPropertyChangedSignal('BackgroundColor3'):Connect(paintSectionState))
+    local shade=holder:FindFirstChild('FunctionShade')
+    if shade then Library:GiveSignal(shade:GetPropertyChangedSignal('Visible'):Connect(paintSectionState)) end
+    local lastBackground
+    Library:GiveSignal(game:GetService('RunService').Heartbeat:Connect(function()
+        local background=Library._context.background()
+        if background~=lastBackground then lastBackground=background;paintSectionState() end
+    end))
+    if featureControls[holder] then featureControls[holder]:OnChanged(paintSectionState) end
+    paintSectionState()
+    local opened,updating,queued=false,false,false
+    local progress=Instance.new('NumberValue');progress.Value=0;progress.Parent=holder
+    local expansionTween
+    local function resize()
+        if updating or not holder.Parent then return end
+        updating=true
+        local height,count=0,0
+        for _,child in ipairs(body:GetChildren()) do
+            if child:IsA('GuiObject') and child.Visible then height=height+child.Size.Y.Offset;count=count+1 end
+        end
+        height=height+math.max(0,count-1)*2
+        local amount=progress.Value
+        holder:SetAttribute('Expanded',opened)
+        body.Visible=amount>.001;body.GroupTransparency=1-amount
+        body.Size=UDim2.new(1,-14,0,height*amount)
+        holder.Size=UDim2.new(1,0,0,22+(height+4)*amount)
+        local shield=holder:FindFirstChild('SectionInputShield')
+        if shield then shield.Visible=false end
+        updating=false
+    end
+    local function schedule()
+        if updating or queued then return end
+        queued=true
+        task.defer(function() queued=false;resize() end)
+    end
+    local hit=Instance.new('TextButton')
+    hit.Name='SectionExpansionHit';hit.BackgroundTransparency=1;hit.Text='';hit.AutoButtonColor=false
+    hit.Size=UDim2.new(1,-30,0,22);hit.ZIndex=3;hit.Parent=holder
+    Library:GiveSignal(progress:GetPropertyChangedSignal('Value'):Connect(resize))
+    Library:GiveSignal(hit.Activated:Connect(function()
+        opened=not opened
+        if expansionTween then expansionTween:Cancel() end
+        expansionTween=game:GetService('TweenService'):Create(progress,
+            TweenInfo.new(.22,Enum.EasingStyle.Quad,Enum.EasingDirection.InOut),{Value=opened and 1 or 0})
+        expansionTween:Play()
+    end))
+    Library:OnUnload(function() if expansionTween then expansionTween:Cancel() end end)
+    local function watch(child)
+        if child:IsA('GuiObject') then
+            Library:GiveSignal(child:GetPropertyChangedSignal('Visible'):Connect(schedule))
+            Library:GiveSignal(child:GetPropertyChangedSignal('Size'):Connect(schedule))
+        end
+    end
+    for _,child in ipairs(body:GetChildren()) do watch(child) end
+    Library:GiveSignal(body.ChildAdded:Connect(function(child) watch(child);schedule() end))
+    Library:GiveSignal(body.ChildRemoved:Connect(schedule))
+    -- Native viewport resize must not reveal a section before the deferred layout runs.
+    Library:GiveSignal(holder:GetPropertyChangedSignal('Size'):Connect(resize))
+    Library:GiveSignal(body:GetPropertyChangedSignal('Visible'):Connect(resize))
+    Library:GiveSignal(body:GetPropertyChangedSignal('Size'):Connect(resize))
+    Library:GiveSignal(body:GetPropertyChangedSignal('GroupTransparency'):Connect(resize))
+    resize()
+end
+for _,holder in ipairs(Window.Gui:GetDescendants()) do
+    if holder:GetAttribute('SectionName') then
+        local body=holder:FindFirstChild('SectionContent')
+        if body then setupCollapsedSection(holder,body) end
+    end
+end
+end
+
+function Library:CreateDrawingCanvas(parent,settings)
+    settings=settings or {}
+    local f=Instance.new('Frame');f.BackgroundTransparency=1;f.Size=UDim2.fromScale(1,1);f.Parent=parent
+    local canvas={frame=f,pool={},used=0}
+local function allocate(d,kind)
+    d.used=d.used+1;local v=d.pool[d.used]
+    if not v or v.ClassName~=kind then
+        if v then v:Destroy() end
+        v=Instance.new(kind);v.BorderSizePixel=0;v.Parent=d.frame;d.pool[d.used]=v
+    end
+    v.Visible=true;return v
+end
+local function line(d,a,b,color,width)
+    local v=allocate(d,'Frame');v.AnchorPoint=Vector2.new(.5,.5);v.Position=UDim2.fromOffset((a.X+b.X)/2,(a.Y+b.Y)/2)
+    v.Size=UDim2.fromOffset((b-a).Magnitude,width);v.Rotation=math.deg(math.atan2(b.Y-a.Y,b.X-a.X));v.BackgroundColor3=color
+end
+local function caption(d,value,x,y,color)
+    local v=allocate(d,'TextLabel');v.AnchorPoint=Vector2.new(.5,.5);v.Position=UDim2.fromOffset(x,y);v.Size=UDim2.fromOffset(160,18)
+    v.BackgroundTransparency=1;v.Text=value;v.TextColor3=color;v.TextStrokeTransparency=.1;v.Font=Enum.Font.ArialBold;v.TextSize=(type(settings.TextSize)=='function' and settings.TextSize() or settings.TextSize or 12)
+end
+function canvas:Line(...) return line(self,...) end
+function canvas:Caption(...) return caption(self,...) end
+function canvas:Finish() for i=self.used+1,#self.pool do self.pool[i].Visible=false end end
+function canvas:Destroy() self.frame:Destroy();self.pool={} end
+return canvas
+end
+
+function Library:CreateESPPreview(Window)
+local preview=Instance.new('Frame')
+preview.Name='ESPPreviewWindow';preview.Size=UDim2.fromOffset(260,340)
+preview.Position=UDim2.new(1,-280,.5,-170);preview.BackgroundColor3=Color3.fromRGB(22,20,24)
+preview.BorderSizePixel=0;preview.Parent=Window.Gui
+local previewCorner=Instance.new('UICorner');previewCorner.CornerRadius=UDim.new(0,7);previewCorner.Parent=preview
+local previewTitle=Instance.new('TextButton');previewTitle.Size=UDim2.new(1,0,0,28)
+previewTitle.BackgroundTransparency=1;previewTitle.Text='ESP Preview';previewTitle.TextColor3=Color3.fromRGB(225,225,225)
+previewTitle.Font=Enum.Font.ArialBold;previewTitle.TextSize=13;previewTitle.Parent=preview
+previewTitle.BackgroundTransparency=0
+previewTitle.BorderSizePixel=0
+previewTitle.AutoButtonColor=false
+previewTitle.BackgroundColor3=Library._context.background():Lerp(Color3.new(),.24)
+local titleCorner=Instance.new('UICorner');titleCorner.CornerRadius=UDim.new(0,7);titleCorner.Parent=previewTitle
+local yaw=0
+local rotating,moving,lastMouse=false,false,nil
+Library:GiveSignal(previewTitle.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then moving=true;lastMouse=game:GetService('UserInputService'):GetMouseLocation() end
+end))
+local viewport=Instance.new('ViewportFrame');viewport.Size=UDim2.new(1,-36,1,-42);viewport.Position=UDim2.fromOffset(18,22);viewport.BackgroundTransparency=1;viewport.Parent=preview
+viewport.Ambient=Color3.fromRGB(180,180,180)
+local world=Instance.new('WorldModel');world.Parent=viewport
+local previewCamera=Instance.new('Camera');previewCamera.Parent=viewport;viewport.CurrentCamera=previewCamera
+local previewModel
+local component={Frame=preview,Viewport=viewport,Camera=previewCamera}
+local function populatePreview(character)
+    if Library.Unloaded or not character then return end
+    local old=character.Archivable;character.Archivable=true
+    local ok,clone=pcall(function() return character:Clone() end);character.Archivable=old
+    if not ok or not clone then return end
+    world:ClearAllChildren()
+    for _,v in ipairs(clone:GetDescendants()) do
+        if v:IsA('Script') or v:IsA('LocalScript') then v:Destroy() elseif v:IsA('BasePart') then v.Anchored=true end
+    end
+    clone.Parent=world;previewModel=clone;component.Model=clone;clone:PivotTo(CFrame.new())
+    local cf,size=clone:GetBoundingBox()
+    previewCamera.FieldOfView=35
+    previewCamera.CFrame=CFrame.lookAt(cf.Position+Vector3.new(0,0,-size.Y*2.25),cf.Position)
+end
+Library:GiveSignal(viewport.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then rotating=true;lastMouse=game:GetService('UserInputService'):GetMouseLocation() end
+end))
+viewport.Active=true
+Library:GiveSignal(game:GetService('UserInputService').InputChanged:Connect(function(input)
+    if input.UserInputType~=Enum.UserInputType.MouseMovement or not lastMouse then return end
+    local mouse=game:GetService('UserInputService'):GetMouseLocation();local delta=mouse-lastMouse;lastMouse=mouse
+    if moving then preview.Position=preview.Position+UDim2.fromOffset(delta.X,delta.Y) end
+    if rotating and previewModel then yaw=yaw+delta.X*.012;previewModel:PivotTo(CFrame.Angles(0,yaw,0)) end
+end))
+Library:GiveSignal(game:GetService('UserInputService').InputEnded:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then moving=false;rotating=false;lastMouse=nil end
+end))
+local lastBackground
+Library:GiveSignal(game:GetService('RunService').Heartbeat:Connect(function()
+    local background=Library._context.background()
+    if background~=lastBackground then
+        lastBackground=background;preview.BackgroundColor3=background
+        previewTitle.BackgroundColor3=background:Lerp(Color3.new(),.24)
+    end
+end))
+function component:SetCharacter(character) return populatePreview(character) end
+function component:SetVisible(value) preview.Visible=value==true end
+function component:Project(point)
+    local size=viewport.AbsoluteSize
+    local localPoint=previewCamera.CFrame:PointToObjectSpace(point)
+    local depth=-localPoint.Z
+    if depth<=.01 or size.Y<=0 then return nil end
+    local scale=size.Y/(2*math.tan(math.rad(previewCamera.FieldOfView/2)))
+    local offset=viewport.AbsolutePosition-preview.AbsolutePosition
+    return Vector2.new(offset.X+size.X/2+localPoint.X/depth*scale,offset.Y+size.Y/2-localPoint.Y/depth*scale)
+end
+return component
+end
+
+function Library:StyleSwitches(Window)
+local themedSwitches={}
+for _,object in ipairs(Window.Gui:GetDescendants()) do
+    if object:IsA('TextButton') and object:FindFirstChild('Thumb') then
+        local gradient=object:FindFirstChildOfClass('UIGradient')
+        if gradient then themedSwitches[#themedSwitches+1]=gradient end
+    end
+end
+local lastSwitchAccent
+Library:GiveSignal(game:GetService('RunService').RenderStepped:Connect(function()
+    local accent=Library._context.accent()
+    if accent~=lastSwitchAccent then
+        lastSwitchAccent=accent
+        local tint=Color3.new(1,1,1):Lerp(accent,.12)
+        local bottom=Color3.new(.66,.66,.66):Lerp(accent,.08)
+        for _,gradient in ipairs(themedSwitches) do
+            if gradient.Parent then gradient.Color=ColorSequence.new(tint,bottom) end
+        end
+    end
+
+end))
+end
+
+function Library:CreateTargetHUD(Window)
+local hud=Instance.new('Frame');hud.Name='TargetHUD';hud.Size=UDim2.fromOffset(300,124);hud.Position=UDim2.new(.5,-150,.65,0);hud.BorderSizePixel=0;hud.Visible=false;hud.Parent=Window.Gui
+local hudCorner=Instance.new('UICorner');hudCorner.CornerRadius=UDim.new(0,8);hudCorner.Parent=hud
+local hudHeader=Instance.new('TextButton')
+hudHeader.Name='TitleBar';hudHeader.Size=UDim2.new(1,0,0,29)
+hudHeader.BorderSizePixel=0;hudHeader.AutoButtonColor=false;hudHeader.Text=''
+hudHeader.BackgroundColor3=Library._context.background():Lerp(Color3.new(),.16);hudHeader.Parent=hud
+local headerRound=Instance.new('UICorner');headerRound.CornerRadius=UDim.new(0,8);headerRound.Parent=hudHeader
+local headerText=Instance.new('TextLabel');headerText.Size=UDim2.new(1,-18,1,0);headerText.Position=UDim2.fromOffset(9,0)
+headerText.BackgroundTransparency=1;headerText.Text='Target HUD';headerText.Font=Enum.Font.ArialBold;headerText.TextSize=12
+headerText.TextXAlignment=Enum.TextXAlignment.Left;headerText.TextColor3=Library._context.accent();headerText.Parent=hudHeader
+local hudGradient=Instance.new('UIGradient');hudGradient.Rotation=90
+hudGradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.new(.96,.96,.96));hudGradient.Parent=hud
+local hudDrag,hudDragStart,hudStartPosition
+local hudInput=game:GetService('UserInputService')
+Library:GiveSignal(hudHeader.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+        hudDrag=input;hudDragStart=Vector2.new(input.Position.X,input.Position.Y);hudStartPosition=hud.Position
+    end
+end))
+Library:GiveSignal(hudInput.InputChanged:Connect(function(input)
+    if not hudDrag then return end
+    if input.UserInputType~=Enum.UserInputType.MouseMovement and input~=hudDrag then return end
+    local delta=Vector2.new(input.Position.X,input.Position.Y)-hudDragStart
+    hud.Position=hudStartPosition+UDim2.fromOffset(delta.X,delta.Y)
+end))
+Library:GiveSignal(hudInput.InputEnded:Connect(function(input)
+    if input==hudDrag or input.UserInputType==Enum.UserInputType.MouseButton1 then hudDrag=nil end
+end))
+local portrait=Instance.new('ImageLabel');portrait.BackgroundTransparency=1;portrait.Position=UDim2.fromOffset(12,41);portrait.Size=UDim2.fromOffset(68,68);portrait.Parent=hud
+local portraitCorner=Instance.new('UICorner');portraitCorner.CornerRadius=UDim.new(0,6);portraitCorner.Parent=portrait
+local hudName=Instance.new('TextLabel');hudName.BackgroundTransparency=1;hudName.Position=UDim2.fromOffset(92,45);hudName.Size=UDim2.fromOffset(194,20);hudName.Font=Enum.Font.ArialBold;hudName.TextSize=14;hudName.TextXAlignment=Enum.TextXAlignment.Left;hudName.Parent=hud
+local hudHealth=hudName:Clone();hudHealth.Position=UDim2.fromOffset(92,73);hudHealth.TextSize=11;hudHealth.Parent=hud
+local track=Instance.new('Frame');track.BorderSizePixel=0;track.Position=UDim2.fromOffset(92,101);track.Size=UDim2.fromOffset(194,6);track.Parent=hud
+local fill=Instance.new('Frame');fill.BorderSizePixel=0;fill.Size=UDim2.fromScale(1,1);fill.Parent=track
+local hudBody=Instance.new('Frame');hudBody.Name='TargetInformation'
+hudBody.Position=UDim2.fromOffset(7,35);hudBody.Size=UDim2.new(1,-14,1,-42)
+hudBody.BorderSizePixel=0;hudBody.ZIndex=0;hudBody.Parent=hud
+local bodyRound=Instance.new('UICorner');bodyRound.CornerRadius=UDim.new(0,6);bodyRound.Parent=hudBody
+local bodyGradient=Instance.new('UIGradient');bodyGradient.Rotation=45
+bodyGradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.new(.92,.92,.92));bodyGradient.Parent=hudBody
+for _,object in ipairs({portrait,hudName,hudHealth,track}) do object.ZIndex=2 end
+fill.ZIndex=3
+track.ClipsDescendants=true
+local trackRound=Instance.new('UICorner');trackRound.CornerRadius=UDim.new(0,3);trackRound.Parent=track
+local fillRound=trackRound:Clone();fillRound.Parent=fill
+local scriptHeading=Window.Holder:FindFirstChild('SectionTitle',true)
+if scriptHeading then
+    headerText.Font=scriptHeading.Font;hudName.Font=scriptHeading.Font;hudHealth.Font=scriptHeading.Font
+end
+local component={Frame=hud}
+local lastPortrait
+function component:SetVisible(value) hud.Visible=value==true end
+function component:SetTarget(data)
+        local accent=Library._context.accent();hud.BackgroundColor3=Library._context.background();hudHeader.BackgroundColor3=Library._context.background():Lerp(Color3.new(),.16);headerText.TextColor3=accent;track.BackgroundColor3=accent:Lerp(Color3.new(),.8);fill.BackgroundColor3=accent
+        hudBody.BackgroundColor3=Library._context.background():Lerp(Color3.new(),.10)
+        local textColor=scriptHeading and scriptHeading.TextColor3 or Color3.fromRGB(234,234,234)
+        headerText.TextColor3=textColor;hudName.TextColor3=textColor;hudHealth.TextColor3=textColor:Lerp(Library._context.background(),.25)
+        hudName.Text=data.Name;hudHealth.Text=string.format('%d / %d HP  ·  %dst',math.floor(data.Health+.5),math.floor(data.MaxHealth+.5),math.floor(data.Distance))
+        fill.Size=UDim2.fromScale(math.clamp(data.Health/math.max(data.MaxHealth,1),0,1),1)
+        if lastPortrait~=data.UserId then lastPortrait=data.UserId;portrait.Image='rbxthumb://type=AvatarHeadShot&id='..data.UserId..'&w=150&h=150' end
+end
+return component
+end
+
+
+function Library:InstallColorPickerInput(Window)
+local popupInput=game:GetService('UserInputService')
+local function releaseColorShield(object)
+    if object.Name~='ColorHex' then return end
+    task.defer(function()
+        if Library.Unloaded or not object.Parent then return end
+        local popup=object.Parent
+        while popup and popup~=Window.Gui and popup.Name~='Popup' do popup=popup.Parent end
+        if not popup or popup==Window.Gui then return end
+        popup.Active=false
+        local shield=popup:FindFirstChild('PopupShield')
+        if shield then shield.Active=false;shield.Visible=false end
+        local panel=popup:FindFirstChild('PopupPanel')
+        if panel then panel.Active=false end
+    end)
+end
+Library:GiveSignal(Window.Gui.DescendantAdded:Connect(releaseColorShield))
+Library:GiveSignal(popupInput.InputBegan:Connect(function(input)
+    if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.MouseButton2 then return end
+    local mouse=popupInput:GetMouseLocation()
+    for _,object in ipairs(Window.Gui:GetDescendants()) do
+        if object.Name=='Popup' and object.Visible then
+            local panel=object:FindFirstChild('PopupPanel')
+            if panel and panel:FindFirstChild('ColorHex',true) then
+                local p,size=panel.AbsolutePosition,panel.AbsoluteSize
+                local inside=mouse.X>=p.X and mouse.X<=p.X+size.X and mouse.Y>=p.Y and mouse.Y<=p.Y+size.Y
+                if not inside then
+                    local focused=popupInput:GetFocusedTextBox()
+                    if focused==panel:FindFirstChild('ColorHex',true) then focused:ReleaseFocus(false) end
+                    if input.UserInputType==Enum.UserInputType.MouseButton1 then object.Visible=false end
+                end
+            end
+        end
+    end
+end))
+
+
+end
+
+function Library:HideBindModeMenu(Window,option)
+    local button=option.Row:FindFirstChildOfClass('TextButton')
+    if not button then return end
+    Library:GiveSignal(button.MouseButton2Click:Connect(function()
+        task.defer(function()
+            if Library.Unloaded then return end
+            for _,object in ipairs(Window.Gui:GetDescendants()) do
+                if object.Name=='Popup' then
+                    local panel=object:FindFirstChild('PopupPanel')
+                    if panel then
+                        local modes=0
+                        for _,child in ipairs(panel:GetChildren()) do
+                            if child:IsA('TextButton') and (child.Text=='Toggle' or child.Text=='Hold' or child.Text=='Always') then modes=modes+1 end
+                        end
+                        if modes==3 then object.Visible=false end
+                    end
+                end
+            end
+        end)
+    end))
+end
+
+function Library:CenterWatermark(Window)
+local watermark=Window.Gui:FindFirstChild('Watermark',true)
+if watermark then
+    local positioning=false
+    local function centerWatermark()
+        if positioning or not watermark.Parent then return end
+        positioning=true
+        watermark.Position=UDim2.new(.5,-watermark.Size.X.Offset/2,watermark.Position.Y.Scale,watermark.Position.Y.Offset)
+        positioning=false
+    end
+    Library:GiveSignal(watermark:GetPropertyChangedSignal('Position'):Connect(centerWatermark))
+    Library:GiveSignal(watermark:GetPropertyChangedSignal('Size'):Connect(centerWatermark))
+    centerWatermark()
+end
+
+
+end
+
+function Library:CreateFOVOverlay(Window,readConfig)
+local AimPlayers=game:GetService('Players')
+local AimInput=game:GetService('UserInputService')
+local AimRun=game:GetService('RunService')
+local oldFOV=AimPlayers.LocalPlayer:WaitForChild('PlayerGui'):FindFirstChild('SpectrohookFOV')
+if oldFOV then oldFOV:Destroy() end
+local fovGui=Instance.new('ScreenGui')
+fovGui.Name='SpectrohookFOV';fovGui.ResetOnSpawn=false;fovGui.IgnoreGuiInset=true
+fovGui.DisplayOrder=1;fovGui.Parent=AimPlayers.LocalPlayer:WaitForChild('PlayerGui')
+local fovCircle=Instance.new('Frame')
+fovCircle.Name='Circle';fovCircle.AnchorPoint=Vector2.new(.5,.5)
+fovCircle.BackgroundTransparency=1;fovCircle.BorderSizePixel=0;fovCircle.Active=false
+fovCircle.Parent=fovGui
+local fovCorner=Instance.new('UICorner');fovCorner.CornerRadius=UDim.new(1,0);fovCorner.Parent=fovCircle
+local fovStroke=Instance.new('UIStroke');fovStroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;fovStroke.Parent=fovCircle
+local gradient=Instance.new('UIGradient');gradient.Parent=fovStroke
+local segments={}
+for i=1,16 do
+    local segment=Instance.new('Frame');segment.BorderSizePixel=0;segment.AnchorPoint=Vector2.new(.5,.5);segment.Parent=fovGui
+    local corner=Instance.new('UICorner');corner.CornerRadius=UDim.new(1,0);corner.Parent=segment
+    segments[i]=segment
+end
+local function updateFOV()
+    local config=readConfig()
+    local visible=config.Enabled
+        and (not config.ActiveOnly or config.AimEnabled)
+    fovGui.Enabled=visible
+    if not visible then return end
+    local mouse=AimInput:GetMouseLocation()
+    local radius=config.Radius
+    fovCircle.Position=UDim2.fromOffset(mouse.X,mouse.Y)
+    fovCircle.Size=UDim2.fromOffset(radius*2,radius*2)
+    local first,second=config.Color,config.Color2
+    local shape=config.Shape
+    if shape=='Rotating corners' then shape='Rotating corners' end
+    fovCircle.Visible=shape=='Circle'
+    gradient.Color=ColorSequence.new(first,second)
+    gradient.Rotation=config.Shimmer and os.clock()*45%360 or 45
+    for i,segment in ipairs(segments) do
+        segment.Visible=(shape=='Rotating corners' and i<=8) or shape=='Rotating dots'
+        segment.Rotation=0
+        local angle=(i-1)/16*math.pi*2+os.clock()*.5
+        local x,y,w,h
+        if shape=='Rotating corners' then
+            local k=math.floor((i-1)/2);local sx=k%2==0 and -1 or 1;local sy=k<2 and -1 or 1
+            local length=radius*config.CornerLength/100
+            local horizontal=i%2==1
+            x=sx*(radius-(horizontal and length/2 or 0));y=sy*(radius-(horizontal and 0 or length/2))
+            w=horizontal and length or config.Thickness;h=horizontal and config.Thickness or length
+        else
+            x=math.cos(angle)*radius;y=math.sin(angle)*radius;w=config.Thickness+2;h=w
+        end
+        if shape=='Rotating corners' then
+            local rotation=os.clock()*.5
+            x,y=x*math.cos(rotation)-y*math.sin(rotation),x*math.sin(rotation)+y*math.cos(rotation)
+            segment.Rotation=math.deg(rotation)%360
+        end
+        segment.Position=UDim2.fromOffset(mouse.X+x,mouse.Y+y);segment.Size=UDim2.fromOffset(w,h)
+        segment.BackgroundColor3=first:Lerp(second,(math.sin(angle)+1)/2)
+        segment.BackgroundTransparency=1-config.Opacity/100
+    end
+    fovStroke.Color=Color3.new(1,1,1)
+    fovStroke.Thickness=config.Thickness
+    fovStroke.Transparency=1-config.Opacity/100
+end
+local fovConnection=AimRun.RenderStepped:Connect(function()
+    if Library.Unloaded or not Window.Gui.Parent then
+        fovGui:Destroy()
+        return
+    end
+    updateFOV()
+end)
+local done=false
+local function destroy()
+    if done then return end;done=true
+    fovConnection:Disconnect();fovGui:Destroy()
+end
+Library:OnUnload(destroy);Window.Gui.Destroying:Connect(destroy)
+return {Gui=fovGui,Destroy=destroy}
+end
+
+function Library:InstallFreeCursor(Window)
+local AimPlayers=game:GetService('Players')
+local AimInput=game:GetService('UserInputService')
+local AimRun=game:GetService('RunService')
+local cursorBinding='SpectrohookFreeMenuCursor'
+local previousMouseBehavior
+local cursorRelease=Instance.new('TextButton')
+cursorRelease.Name='SpectrohookCursorRelease'
+cursorRelease.Size=UDim2.fromOffset(1,1)
+cursorRelease.Position=UDim2.fromOffset(0,0)
+cursorRelease.BackgroundTransparency=1
+cursorRelease.Text=''
+cursorRelease.AutoButtonColor=false
+cursorRelease.Active=true
+cursorRelease.Modal=true
+cursorRelease.Parent=Window.Gui
+AimRun:UnbindFromRenderStep(cursorBinding)
+local function updateCursorCapture()
+    local open=not Library.Unloaded and Window.Holder:GetAttribute('VisibleTarget')~=false
+    local rightDown=AimInput:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    cursorRelease.Modal=open and not rightDown
+    cursorRelease.Visible=open and not rightDown
+    if open then
+        if not previousMouseBehavior then previousMouseBehavior=AimInput.MouseBehavior end
+        if rightDown then
+            local camera=workspace.CurrentCamera
+            local character=AimPlayers.LocalPlayer.Character
+            local head=character and character:FindFirstChild('Head')
+            local firstPerson=camera and head and (camera.CFrame.Position-head.Position).Magnitude<1.5
+            AimInput.MouseBehavior=firstPerson and Enum.MouseBehavior.LockCenter
+                or Enum.MouseBehavior.LockCurrentPosition
+        else
+            AimInput.MouseBehavior=Enum.MouseBehavior.Default
+        end
+    elseif previousMouseBehavior then
+        AimInput.MouseBehavior=previousMouseBehavior
+        previousMouseBehavior=nil
+    end
+end
+AimRun:BindToRenderStep(cursorBinding,Enum.RenderPriority.Last.Value+1,updateCursorCapture)
+local cursorPressed=AimInput.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton2 then updateCursorCapture() end
+end)
+local cursorReleased=AimInput.InputEnded:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton2 then updateCursorCapture() end
+end)
+local cleaned=false
+local function cleanupOverlay()
+    if cleaned then return end
+    cleaned=true
+    cursorPressed:Disconnect()
+    cursorReleased:Disconnect()
+    cursorRelease.Modal=false
+    cursorRelease:Destroy()
+    AimRun:UnbindFromRenderStep(cursorBinding)
+    if previousMouseBehavior then AimInput.MouseBehavior=previousMouseBehavior;previousMouseBehavior=nil end
+end
+Window.Gui.Destroying:Connect(cleanupOverlay)
+Library:OnUnload(cleanupOverlay)
 end
 
 return Library
